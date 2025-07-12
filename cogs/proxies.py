@@ -59,7 +59,7 @@ class ProxyCog(commands.Cog):
 
     @commands.command()
     async def proxysay(self, ctx, key: str, *, message: str):
-        """Send a message using a proxy key."""
+        """Send a message using a proxy key. Works in threads and forum posts."""
         self.cursor.execute('SELECT * FROM proxy_users WHERE proxy_key = ? AND user_id = ?',
                             (key, str(ctx.author.id)))
         if not self.cursor.fetchone():
@@ -74,8 +74,17 @@ class ProxyCog(commands.Cog):
             return
 
         name, avatar_url = row
-        webhook = await ctx.channel.create_webhook(name=name)
-        await webhook.send(message, username=name, avatar_url=avatar_url)
+        # Determine the parent channel for threads and forum posts
+        channel = ctx.channel
+        if hasattr(channel, 'parent') and channel.parent is not None:
+            parent = channel.parent
+            # If this is a thread or forum post, use the parent channel to create the webhook
+            webhook_channel = parent
+        else:
+            webhook_channel = channel
+
+        webhook = await webhook_channel.create_webhook(name=name)
+        await webhook.send(message, username=name, avatar_url=avatar_url, thread=channel if hasattr(channel, 'parent') and channel.parent is not None else None)
         await webhook.delete()
         await ctx.message.delete()
 
