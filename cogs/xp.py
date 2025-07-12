@@ -26,15 +26,19 @@ class XPCog(commands.Cog):
         # No XP for regular messages
         return
 
-    def add_xp(self, user_id, channel):
+    def add_xp(self, user_id, channel, message_text=None):
         self.cursor.execute('SELECT xp, level FROM xp WHERE user_id = ?', (user_id,))
         row = self.cursor.fetchone()
+        # Calculate XP to add: 1 XP per 40 characters, minimum 1 XP
+        xp_to_add = 1
+        if message_text is not None:
+            xp_to_add = max(1, len(message_text) // 25)
         if row:
             xp, level = row
-            xp += 10  # XP per proxysay
+            xp += xp_to_add
         else:
-            xp, level = 10, 1
-        next_level_xp = 100 * level
+            xp, level = xp_to_add, 1
+        next_level_xp = 1000
         if xp >= next_level_xp:
             level += 1
             asyncio.create_task(channel.send(f"<@{user_id}> leveled up to {level}!"))
