@@ -1,5 +1,7 @@
+import os
 import discord
 from discord.ext import commands
+from discord import app_commands
 
 import sqlite3
 import logging
@@ -33,18 +35,13 @@ class ProxyCog(commands.Cog):
         self.db.commit()
         await ctx.send(f"Proxy '{key}' and all associated access have been deleted.")
 
-    @commands.command()
-    async def createproxy(self, ctx, key: str, name: str, avatar_url: str):
-        """Create a proxy with a unique key."""
-        try:
-            self.cursor.execute('INSERT INTO proxies (proxy_key, proxy_name, avatar_url) VALUES (?, ?, ?)',
-                                (key, name, avatar_url))
-            self.cursor.execute('INSERT INTO proxy_users (proxy_key, user_id) VALUES (?, ?)',
-                                (key, str(ctx.author.id)))
-            self.db.commit()
-            await ctx.send(f"Proxy '{name}' created with key '{key}'")
-        except sqlite3.IntegrityError:
-            await ctx.send("That proxy key already exists.")
+    @app_commands.command(name="deleteproxy", description="Delete a proxy and remove all associated users. (Admin only)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def deleteproxy_slash(self, interaction: discord.Interaction, key: str):
+        self.cursor.execute('DELETE FROM proxy_users WHERE proxy_key = ?', (key,))
+        self.cursor.execute('DELETE FROM proxies WHERE proxy_key = ?', (key,))
+        self.db.commit()
+        await interaction.response.send_message(f"Proxy '{key}' and all associated access have been deleted.")
 
     @commands.command()
     async def grantproxy(self, ctx, key: str, member: discord.Member):
@@ -60,48 +57,24 @@ class ProxyCog(commands.Cog):
         self.db.commit()
         await ctx.send(f"Granted access to {member.mention} for proxy '{key}'")
 
-    @commands.command()
-    async def proxysay(self, ctx, key: str, *, message: str):
-        """Send a message using a proxy key. Works in threads and forum posts. Awards XP."""
+    @app_commands.command(name="grantproxy", description="Grant another user access to a proxy you created.")
+    async def grantproxy_slash(self, interaction: discord.Interaction, key: str, member: discord.Member):
         self.cursor.execute('SELECT * FROM proxy_users WHERE proxy_key = ? AND user_id = ?',
-                            (key, str(ctx.author.id)))
+                            (key, str(interaction.user.id)))
         if not self.cursor.fetchone():
-            await ctx.send("You do not have access to this proxy.")
+            await interaction.response.send_message("You do not have access to this proxy.", ephemeral=True)
             return
 
-        self.cursor.execute('SELECT proxy_name, avatar_url FROM proxies WHERE proxy_key = ?', (key,))
-        row = self.cursor.fetchone()
-
-        if not row:
-            await ctx.send("Proxy not found.")
-            return
-
-        name, avatar_url = row
-        channel = ctx.channel
-        if hasattr(channel, 'parent') and channel.parent is not None:
-            parent = channel.parent
-            webhook_channel = parent
-        else:
-            webhook_channel = channel
-
-        webhook = await webhook_channel.create_webhook(name=name)
-        if hasattr(channel, 'parent') and channel.parent is not None:
-            await webhook.send(message, username=name, avatar_url=avatar_url, thread=channel)
-        else:
-            await webhook.send(message, username=name, avatar_url=avatar_url)
-        await webhook.delete()
-        await ctx.message.delete()
-
-        # Award XP to the user who used proxysay
-        xp_cog = ctx.bot.get_cog("XPCog")
-        if xp_cog:
-            xp_cog.add_xp(str(ctx.author.id), ctx.channel, message)
+        self.cursor.execute('REPLACE INTO proxy_users (proxy_key, user_id) VALUES (?, ?)',
+                            (key, str(member.id)))
+        self.db.commit()
+        await interaction.response.send_message(f"Granted access to {member.mention} for proxy '{key}'")
 
     @commands.command()
     async def listproxies(self, ctx):
-        """List all proxies you have access to."""
+        """List all proxies you have access to, each as an embed with thumbnail and access list."""
         self.cursor.execute('''
-            SELECT proxies.proxy_key, proxies.proxy_name FROM proxies
+            SELECT proxies.proxy_key, proxies.proxy_name, proxies.avatar_url FROM proxies
             JOIN proxy_users ON proxies.proxy_key = proxy_users.proxy_key
             WHERE proxy_users.user_id = ?
         ''', (str(ctx.author.id),))
@@ -109,13 +82,52 @@ class ProxyCog(commands.Cog):
         if not proxies:
             await ctx.send("You don't have access to any proxies.")
         else:
-            msg = "Your proxies:\n" + "\n".join([f"Key: {key}, Name: {name}" for key, name in proxies])
-            await ctx.send(msg)
+            for key, name, avatar_url in proxies:
+                # Get all users with access to this proxy
+                self.cursor.execute('SELECT user_id FROM proxy_users WHERE proxy_key = ?', (key,))
+                user_ids = [row[0] for row in self.cursor.fetchall()]
+                members = [ctx.guild.get_member(int(uid)) for uid in user_ids]
+                member_mentions = [m.mention for m in members if m]
+                access_list = ", ".join(member_mentions) if member_mentions else "No users found"
+                embed = discord.Embed(title=f"Proxy: {name}", description=f"Key: {key}\nAccess: {access_list}")
+                if avatar_url:
+                    embed.set_thumbnail(url=avatar_url)
+                await ctx.send(embed=embed)
+
+    @app_commands.command(name="listproxies", description="List all proxies you have access to.")
+    async def listproxies_slash(self, interaction: discord.Interaction):
+        self.cursor.execute('''
+            SELECT proxies.proxy_key, proxies.proxy_name, proxies.avatar_url FROM proxies
+            JOIN proxy_users ON proxies.proxy_key = proxy_users.proxy_key
+            WHERE proxy_users.user_id = ?
+        ''', (str(interaction.user.id),))
+        proxies = self.cursor.fetchall()
+        if not proxies:
+            await interaction.response.send_message("You don't have access to any proxies.", ephemeral=True)
+        else:
+            for key, name, avatar_url in proxies:
+                # Get all users with access to this proxy
+                self.cursor.execute('SELECT user_id FROM proxy_users WHERE proxy_key = ?', (key,))
+                user_ids = [row[0] for row in self.cursor.fetchall()]
+                members = [interaction.guild.get_member(int(uid)) for uid in user_ids]
+                member_mentions = [m.mention for m in members if m]
+                access_list = ", ".join(member_mentions) if member_mentions else "No users found"
+                embed = discord.Embed(title=f"Proxy: {name}", description=f"Key: {key}\nAccess: {access_list}")
+                if avatar_url:
+                    embed.set_thumbnail(url=avatar_url)
+                await interaction.channel.send(embed=embed)
+            await interaction.response.send_message("Proxies listed above.", ephemeral=True)
 
     def cog_unload(self):
         self.db.close()
 
-
 async def setup(bot):
-    await bot.add_cog(ProxyCog(bot))
-    print("ProxyCog loaded")
+    cog = ProxyCog(bot)
+    await bot.add_cog(cog)
+    guild_id = int(os.getenv("GUILD_ID"))
+    guild_obj = discord.Object(id=guild_id)
+    # Manually add each app command to the tree for your guild
+    bot.tree.add_command(cog.listproxies_slash, guild=guild_obj)
+    bot.tree.add_command(cog.grantproxy_slash, guild=guild_obj)
+    bot.tree.add_command(cog.deleteproxy_slash, guild=guild_obj)
+    print("ProxyCog loaded and slash commands registered")
