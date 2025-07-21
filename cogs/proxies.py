@@ -118,6 +118,61 @@ class ProxyCog(commands.Cog):
                 await interaction.channel.send(embed=embed)
             await interaction.response.send_message("Proxies listed above.", ephemeral=True)
 
+    @commands.command()
+    async def proxysay(self, ctx, key: str, *, message: str):
+        """Post a message as a proxy using its avatar and name."""
+        self.cursor.execute('SELECT * FROM proxy_users WHERE proxy_key = ? AND user_id = ?', (key, str(ctx.author.id)))
+        if not self.cursor.fetchone():
+            await ctx.send("You do not have access to this proxy.")
+            return
+
+        self.cursor.execute('SELECT proxy_name, avatar_url FROM proxies WHERE proxy_key = ?', (key,))
+        row = self.cursor.fetchone()
+        if not row:
+            await ctx.send("Proxy not found.")
+            return
+        name, avatar_url = row
+
+        # Determine parent channel for threads/forums
+        channel = ctx.channel
+        parent_channel = getattr(channel, "parent", None) or channel
+        webhook = await parent_channel.create_webhook(name=name)
+        if isinstance(channel, (discord.Thread, discord.ForumChannel)):
+            await webhook.send(message, username=name, avatar_url=avatar_url, thread=channel)
+        else:
+            await webhook.send(message, username=name, avatar_url=avatar_url)
+        await webhook.delete()
+        await ctx.message.delete()
+
+        # Award XP for proxysay usage
+        xp_cog = ctx.bot.get_cog("XPCog")
+        if xp_cog:
+            xp_cog.add_xp(str(ctx.author.id), ctx.channel, message)
+
+    @app_commands.command(name="proxysay", description="Post a message as a proxy using its avatar and name.")
+    async def proxysay_slash(self, interaction: discord.Interaction, key: str, message: str):
+        self.cursor.execute('SELECT * FROM proxy_users WHERE proxy_key = ? AND user_id = ?', (key, str(interaction.user.id)))
+        if not self.cursor.fetchone():
+            await interaction.response.send_message("You do not have access to this proxy.", ephemeral=True)
+            return
+
+        self.cursor.execute('SELECT proxy_name, avatar_url FROM proxies WHERE proxy_key = ?', (key,))
+        row = self.cursor.fetchone()
+        if not row:
+            await interaction.response.send_message("Proxy not found.", ephemeral=True)
+            return
+        name, avatar_url = row
+
+        channel = interaction.channel
+        parent_channel = getattr(channel, "parent", None) or channel
+        webhook = await parent_channel.create_webhook(name=name)
+        if isinstance(channel, (discord.Thread, discord.ForumChannel)):
+            await webhook.send(message, username=name, avatar_url=avatar_url, thread=channel)
+        else:
+            await webhook.send(message, username=name, avatar_url=avatar_url)
+        await webhook.delete()
+        await interaction.response.send_message("Message sent as proxy.", ephemeral=True)
+
     def cog_unload(self):
         self.db.close()
 
@@ -130,4 +185,5 @@ async def setup(bot):
     bot.tree.add_command(cog.listproxies_slash, guild=guild_obj)
     bot.tree.add_command(cog.grantproxy_slash, guild=guild_obj)
     bot.tree.add_command(cog.deleteproxy_slash, guild=guild_obj)
+    bot.tree.add_command(cog.proxysay_slash, guild=guild_obj)
     print("ProxyCog loaded and slash commands registered")
